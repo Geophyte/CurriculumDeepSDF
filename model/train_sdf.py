@@ -4,7 +4,7 @@ import torch.optim as optim
 import data.dataset_sdf as dataset
 from torch.utils.data import random_split
 from torch.utils.data import DataLoader
-import results.runs_sdf as runs
+import results
 from utils.utils_deepsdf import SDFLoss_multishape
 import os
 from datetime import datetime
@@ -27,7 +27,7 @@ class Trainer():
     def __call__(self):
         # directories
         self.timestamp_run = datetime.now().strftime('%d_%m_%H%M%S')   # timestamp to use for logging data
-        self.runs_dir = os.path.dirname(runs.__file__)               # directory fo all runs
+        self.runs_dir =  os.path.join(os.path.dirname(results.__file__), 'runs_sdf') # directory fo all runs
         self.run_dir = os.path.join(self.runs_dir, self.timestamp_run)  # directory for this run
         if not os.path.exists(self.run_dir):
             os.makedirs(self.run_dir)
