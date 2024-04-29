@@ -3,11 +3,12 @@ import torch
 import copy
 from tqdm import tqdm
 from utils import utils_deepsdf
-import numpy as np
+
 """
-Model based on the paper 'DeepSDF'. 
+Model based on the paper 'DeepSDF'.
 """
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 class SDFModel(torch.nn.Module):
     def __init__(self, num_layers, skip_connections, latent_size, inner_dim=512, output_dim=1):
@@ -19,7 +20,7 @@ class SDFModel(torch.nn.Module):
         super(SDFModel, self).__init__()
 
         # Num layers of the entire network
-        self.num_layers = num_layers 
+        self.num_layers = num_layers
 
         # If skip connections, add the input to one of the inner layers
         self.skip_connections = skip_connections
@@ -27,7 +28,7 @@ class SDFModel(torch.nn.Module):
         self.latent_size = latent_size
 
         # Dimension of the input space (3D coordinates)
-        dim_coords = 3 
+        dim_coords = 3
         input_dim = self.latent_size + dim_coords
 
         # Copy input size to calculate the skip tensor size
@@ -35,7 +36,7 @@ class SDFModel(torch.nn.Module):
 
         # Compute how many layers are not Sequential
         num_extra_layers = 2 if (self.skip_connections and self.num_layers >= 8) else 1
-        
+
         # Add sequential layers
         layers = []
         for _ in range(num_layers - num_extra_layers):
@@ -53,7 +54,7 @@ class SDFModel(torch.nn.Module):
             x: input tensor of shape (batch_size, 131). It contains a stacked tensor [latent_code, samples].
         Returns:
             sdf: output tensor of shape (batch_size, 1)
-        """      
+        """
         input_data = x.clone().detach()
 
         # Forward pass
@@ -77,13 +78,13 @@ class SDFModel(torch.nn.Module):
         """Infer latent code from coordinates, their sdf, and a trained model."""
 
         latent_code = latent_code_initial.clone().detach().requires_grad_(True)
-        
+
         optim = torch.optim.Adam([latent_code], lr=cfg['lr'])
 
         if cfg['lr_scheduler']:
-            scheduler_latent = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode='min', 
-                                                    factor=cfg['lr_multiplier'], 
-                                                    patience=cfg['patience'], 
+            scheduler_latent = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode='min',
+                                                    factor=cfg['lr_multiplier'],
+                                                    patience=cfg['patience'],
                                                     threshold=0.001, threshold_mode='rel')
 
         best_loss = 1000000
@@ -100,7 +101,7 @@ class SDFModel(torch.nn.Module):
             if cfg['clamp']:
                 predictions = torch.clamp(predictions, -cfg['clamp_value'], cfg['clamp_value'])
 
-            loss_value, l1, l2 = utils_deepsdf.SDFLoss_multishape(sdf_gt, predictions, x[:, :self.latent_size], sigma=cfg['sigma_regulariser'])
+            loss_value, l1, l2 = utils_deepsdf.SDFLoss_multishape(sdf_gt, predictions, x[:, :self.latent_size], sigma=cfg['sigma_regulariser'], epsilon=0, lambdaa=0)
             loss_value.backward()
 
             if writer is not None:

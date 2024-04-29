@@ -20,12 +20,29 @@ def clamp(x, delta=torch.tensor([[0.1]]).to(device)):
     return minimum
 
 
-def SDFLoss_multishape(sdf, prediction, x_latent, sigma):
+def _L(sdf, prediction):
+    return torch.abs(prediction - sdf)
+
+
+def _L_epsilon(sdf, prediction, epsilon):
+    return torch.max(_L(sdf, prediction) - epsilon, torch.tensor(0))
+
+
+def _L_epsilon_lambda(sdf, prediction, epsilon, lambdaa):
+    def sgn(x):
+        sgn_x = torch.sign(x)
+        sgn_x[sgn_x == 0] = 1
+        return sgn_x
+
+    return (1 + lambdaa * sgn(sdf) * sgn(sdf - prediction)) * _L_epsilon(sdf, prediction, epsilon)
+
+
+def SDFLoss_multishape(sdf, prediction, x_latent, sigma, epsilon, lambdaa):
     """Loss function introduced in the paper DeepSDF for multiple shapes."""
-    l1 = torch.mean(torch.abs(prediction - sdf))
+    l1 = torch.mean(_L_epsilon_lambda(sdf, prediction, epsilon, lambdaa))
     l2 = sigma**2 * torch.mean(torch.linalg.norm(x_latent, dim=1, ord=2))
     loss = l1 + l2
-    #print(f'Loss prediction: {l1:.3f}, Loss regulariser: {l2:.3f}')
+    # print(f'Loss prediction: {l1:.3f}, Loss regulariser: {l2:.3f}')
     return loss, l1, l2
 
 

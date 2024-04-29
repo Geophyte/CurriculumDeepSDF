@@ -20,6 +20,7 @@ import config_files
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 print(f'Device: {device}')
 
+
 class Trainer():
     def __init__(self, train_cfg):
         self.train_cfg = train_cfg
@@ -27,11 +28,11 @@ class Trainer():
     def __call__(self):
         # directories
         self.timestamp_run = datetime.now().strftime('%d_%m_%H%M%S')   # timestamp to use for logging data
-        self.runs_dir =  os.path.join(os.path.dirname(results.__file__), 'runs_sdf') # directory fo all runs
+        self.runs_dir = os.path.join(os.path.dirname(results.__file__), 'runs_sdf') # directory fo all runs
         self.run_dir = os.path.join(self.runs_dir, self.timestamp_run)  # directory for this run
         if not os.path.exists(self.run_dir):
             os.makedirs(self.run_dir)
-        
+
         # Logging
         self.writer = SummaryWriter(log_dir=self.run_dir)
         self.log_path = os.path.join(self.run_dir, 'settings.yaml')
@@ -44,19 +45,19 @@ class Trainer():
 
         # instantiate model and optimisers
         self.model = sdf_model.SDFModel(
-                self.train_cfg['num_layers'], 
-                self.train_cfg['skip_connections'], 
+                self.train_cfg['num_layers'],
+                self.train_cfg['skip_connections'],
                 inner_dim=self.train_cfg['inner_dim'],
                 latent_size=self.train_cfg['latent_size']
             ).float().to(device)
 
         # define optimisers
         self.optimizer_model = optim.Adam(self.model.parameters(), lr=self.train_cfg['lr_model'], weight_decay=0)
-        
+
         # generate a unique random latent code for each shape
         self.latent_codes = utils_deepsdf.generate_latent_codes(self.train_cfg['latent_size'], samples_dict)
         self.optimizer_latent = optim.Adam([self.latent_codes], lr=self.train_cfg['lr_latent'], weight_decay=0)
-        
+
         # Load pretrained weights and optimisers to continue training
         if self.train_cfg['pretrained']:
             # load pretrained weights
@@ -76,13 +77,13 @@ class Trainer():
             self.optimizer_latent.load_state_dict(torch.load(self.train_cfg['pretrain_optim_latent'], map_location=device))
 
         if self.train_cfg['lr_scheduler']:
-            self.scheduler_model =  torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_model, mode='min', factor=self.train_cfg['lr_multiplier'], patience=self.train_cfg['patience'], threshold=0.0001, threshold_mode='rel')
-            self.scheduler_latent =  torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_latent, mode='min', factor=self.train_cfg['lr_multiplier'], patience=self.train_cfg['patience'], threshold=0.0001, threshold_mode='rel')
+            self.scheduler_model = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_model, mode='min', factor=self.train_cfg['lr_multiplier'], patience=self.train_cfg['patience'], threshold=0.0001, threshold_mode='rel')
+            self.scheduler_latent = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_latent, mode='min', factor=self.train_cfg['lr_multiplier'], patience=self.train_cfg['patience'], threshold=0.0001, threshold_mode='rel')
             
         # get data
         train_loader, val_loader = self.get_loaders()
         self.results = {
-            'best_latent_codes' : []
+            'best_latent_codes': []
         }
 
         best_loss = 10000000000
@@ -91,7 +92,7 @@ class Trainer():
             print(f'============================ Epoch {epoch} ============================')
             self.epoch = epoch
 
-            avg_train_loss = self.train(train_loader)
+            avg_train_loss = self.train(train_loader, 0, 0)
 
             with torch.no_grad():
                 avg_val_loss = self.validate(val_loader)
@@ -115,7 +116,7 @@ class Trainer():
 
                     self.writer.add_scalar('Learning rate (model)', self.scheduler_model._last_lr[0], epoch)
                     self.writer.add_scalar('Learning rate (latent)', self.scheduler_latent._last_lr[0], epoch)            
-            
+
         end = time.time()
         print(f'Time elapsed: {end - start} s')
 
@@ -162,7 +163,7 @@ class Trainer():
 
         return x, y, latent_classes_batch.view(-1), latent_codes_batch
 
-    def train(self, train_loader):
+    def train(self, train_loader, epsilon, lambdaa):
         total_loss = 0.0
         iterations = 0.0
         self.model.train()
@@ -179,9 +180,9 @@ class Trainer():
             predictions = self.model(x)  # (batch_size, 1)
             if self.train_cfg['clamp']:
                 predictions = torch.clamp(predictions, -self.train_cfg['clamp_value'], self.train_cfg['clamp_value'])
-            
-            loss_value, loss_rec, loss_latent = self.train_cfg['loss_multiplier'] * SDFLoss_multishape(y, predictions, x[:, :self.train_cfg['latent_size']], sigma=self.train_cfg['sigma_regulariser'])
-            loss_value.backward()       
+
+            loss_value, _, _ = self.train_cfg['loss_multiplier'] * SDFLoss_multishape(y, predictions, x[:, :self.train_cfg['latent_size']], sigma=self.train_cfg['sigma_regulariser'], epsilon=epsilon, lambdaa=lambdaa)
+            loss_value.backward()
 
             self.optimizer_latent.step()
             self.optimizer_model.step()
@@ -211,8 +212,8 @@ class Trainer():
             if train_cfg['clamp']:
                 predictions = torch.clamp(predictions, -train_cfg['clamp_value'], train_cfg['clamp_value'])
 
-            loss_value, loss_rec, loss_latent = self.train_cfg['loss_multiplier'] * SDFLoss_multishape(y, predictions, latent_codes_batch, self.train_cfg['sigma_regulariser'])          
-            total_loss += loss_value.data.cpu().numpy()   
+            loss_value, loss_rec, loss_latent = self.train_cfg['loss_multiplier'] * SDFLoss_multishape(y, predictions, latent_codes_batch, self.train_cfg['sigma_regulariser'], epsilon=0, lambdaa=0)
+            total_loss += loss_value.data.cpu().numpy()
             total_loss_rec += loss_rec.data.cpu().numpy() 
             total_loss_latent += loss_latent.data.cpu().numpy()
 
@@ -225,6 +226,7 @@ class Trainer():
         self.writer.add_scalar('Latent code loss', avg_loss_latent, self.epoch)
 
         return avg_val_loss
+
 
 if __name__=='__main__':
     train_cfg_path = os.path.join(os.path.dirname(config_files.__file__), 'train_sdf.yaml')
