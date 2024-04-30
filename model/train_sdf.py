@@ -44,12 +44,13 @@ class Trainer():
         samples_dict = np.load(samples_dict_path, allow_pickle=True).item()
 
         # instantiate model and optimisers
+        num_layers = self.train_cfg['num_layers'] - 3 if self.train_cfg['curriculum'] else self.train_cfg['num_layers'] # we will add those 3 later
         self.model = sdf_model.SDFModel(
-                self.train_cfg['num_layers'],
-                self.train_cfg['skip_connections'],
-                inner_dim=self.train_cfg['inner_dim'],
-                latent_size=self.train_cfg['latent_size']
-            ).float().to(device)
+                    num_layers,
+                    self.train_cfg['skip_connections'],
+                    inner_dim=self.train_cfg['inner_dim'],
+                    latent_size=self.train_cfg['latent_size']
+                ).float().to(device)
 
         # define optimisers
         self.optimizer_model = optim.Adam(self.model.parameters(), lr=self.train_cfg['lr_model'], weight_decay=0)
@@ -79,43 +80,68 @@ class Trainer():
         if self.train_cfg['lr_scheduler']:
             self.scheduler_model = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_model, mode='min', factor=self.train_cfg['lr_multiplier'], patience=self.train_cfg['patience'], threshold=0.0001, threshold_mode='rel')
             self.scheduler_latent = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_latent, mode='min', factor=self.train_cfg['lr_multiplier'], patience=self.train_cfg['patience'], threshold=0.0001, threshold_mode='rel')
-            
+
         # get data
         train_loader, val_loader = self.get_loaders()
         self.results = {
             'best_latent_codes': []
         }
 
+        def save_state(avg_val_loss, best_loss):
+            if avg_val_loss < best_loss:
+                best_loss = np.copy(avg_val_loss)
+                best_weights = self.model.state_dict()
+                best_latent_codes = self.latent_codes.detach().cpu().numpy()
+                optimizer_model_state = self.optimizer_model.state_dict()
+                optimizer_latent_state = self.optimizer_latent.state_dict()
+
+                np.save(os.path.join(self.run_dir, 'results.npy'), self.results)
+                torch.save(best_weights, os.path.join(self.run_dir, 'weights.pt'))
+                torch.save(optimizer_model_state, os.path.join(self.run_dir, 'optimizer_model_state.pt'))
+                torch.save(optimizer_latent_state, os.path.join(self.run_dir, 'optimizer_latent_state.pt'))
+                self.results['best_latent_codes'] = best_latent_codes
+
+            if self.train_cfg['lr_scheduler']:
+                self.scheduler_model.step(avg_val_loss)
+                self.scheduler_latent.step(avg_val_loss)
+
+                self.writer.add_scalar('Learning rate (model)', self.scheduler_model._last_lr[0], epoch)
+                self.writer.add_scalar('Learning rate (latent)', self.scheduler_latent._last_lr[0], epoch)
+
+            return best_loss
+
         best_loss = 10000000000
         start = time.time()
-        for epoch in range(self.train_cfg['epochs']):
-            print(f'============================ Epoch {epoch} ============================')
-            self.epoch = epoch
+        total_epochs = 0
 
-            avg_train_loss = self.train(train_loader, 0, 0)
+        if self.train_cfg['curriculum']:
+            epochs = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.4]
+            residuals = [False, True, False, True, False, True, False]
+            epsilons = [0.025, 0.01, 0.01, 0.0025, 0.0025, 0, 0]
+            lambdas = [0, 0.1, 0.1, 0.2, 0.2, 0.5, 0.5]
+        else:
+            epochs = [1.0]
+            residuals = [False]
+            epsilons = [0.0]
+            lambdas = [0.0]
 
-            with torch.no_grad():
-                avg_val_loss = self.validate(val_loader)
+        for i in range(len(epochs)):
+            if residuals[i]:
+                print("[ADDED LAYER]")
+                self.model.add_layer(device)
+                self.model.alpha = 0.0
 
-                if avg_val_loss < best_loss:
-                    best_loss = np.copy(avg_val_loss)
-                    best_weights = self.model.state_dict()
-                    best_latent_codes = self.latent_codes.detach().cpu().numpy()
-                    optimizer_model_state = self.optimizer_model.state_dict()
-                    optimizer_latent_state = self.optimizer_latent.state_dict()
+            num_epochs = int(self.train_cfg['epochs'] * epochs[i])
+            for epoch in range(num_epochs):
+                print(f'============================ Epoch {total_epochs} ============================')
+                total_epochs += 1
+                self.epoch = total_epochs
 
-                    np.save(os.path.join(self.run_dir, 'results.npy'), self.results)
-                    torch.save(best_weights, os.path.join(self.run_dir, 'weights.pt'))
-                    torch.save(optimizer_model_state, os.path.join(self.run_dir, 'optimizer_model_state.pt'))
-                    torch.save(optimizer_latent_state, os.path.join(self.run_dir, 'optimizer_latent_state.pt'))
-                    self.results['best_latent_codes'] = best_latent_codes
+                _ = self.train(train_loader, epsilons[i], lambdas[i])
 
-                if self.train_cfg['lr_scheduler']:
-                    self.scheduler_model.step(avg_val_loss)
-                    self.scheduler_latent.step(avg_val_loss)
-
-                    self.writer.add_scalar('Learning rate (model)', self.scheduler_model._last_lr[0], epoch)
-                    self.writer.add_scalar('Learning rate (latent)', self.scheduler_latent._last_lr[0], epoch)            
+                with torch.no_grad():
+                    avg_val_loss = self.validate(val_loader)
+                    best_loss = save_state(avg_val_loss, best_loss)
 
         end = time.time()
         print(f'Time elapsed: {end - start} s')

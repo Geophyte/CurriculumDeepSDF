@@ -12,6 +12,7 @@ sigma_regulariser: 0.01   # Sigma value as regulariser in the loss function
 loss_multiplier: 1   # Loss multiplier
 clamp: true  # Clip the network prediction
 clamp_value: 0.1  # Value for clipping
+curriculum: False
 
 # architecture
 num_layers: 8   # Num network layers

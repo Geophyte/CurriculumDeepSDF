@@ -18,6 +18,7 @@ class SDFModel(torch.nn.Module):
             input_dim: 128 for latent space + 3 points = 131
         """
         super(SDFModel, self).__init__()
+        self.alpha = 1.0
 
         # Num layers of the entire network
         self.num_layers = num_layers
@@ -29,23 +30,30 @@ class SDFModel(torch.nn.Module):
 
         # Dimension of the input space (3D coordinates)
         dim_coords = 3
-        input_dim = self.latent_size + dim_coords
+        self.input_dim = self.latent_size + dim_coords
+        self.inner_dim = inner_dim
 
         # Copy input size to calculate the skip tensor size
-        self.skip_tensor_dim = copy.copy(input_dim)
+        self.skip_tensor_dim = copy.copy(self.input_dim)
 
         # Compute how many layers are not Sequential
-        num_extra_layers = 2 if (self.skip_connections and self.num_layers >= 8) else 1
+        num_extra_layers = 2 if (self.skip_connections) else 1
 
         # Add sequential layers
         layers = []
         for _ in range(num_layers - num_extra_layers):
-            layers.append(nn.Sequential(nn.utils.weight_norm(nn.Linear(input_dim, inner_dim)), nn.ReLU()))
-            input_dim = inner_dim
+            layers.append(nn.Sequential(nn.utils.weight_norm(nn.Linear(self.input_dim, self.inner_dim)), nn.ReLU()))
+            self.input_dim = self.inner_dim
         self.net = nn.Sequential(*layers)
-        self.final_layer = nn.Sequential(nn.Linear(inner_dim, output_dim), nn.Tanh())
-        self.skip_layer = nn.Sequential(nn.Linear(inner_dim, inner_dim - self.skip_tensor_dim), nn.ReLU())
+        self.final_layer = nn.Sequential(nn.Linear(self.inner_dim, output_dim), nn.Tanh())
+        self.skip_layer = nn.Sequential(nn.Linear(self.inner_dim, self.inner_dim - self.skip_tensor_dim), nn.ReLU())
 
+    def add_layer(self, device):
+        new_layer = nn.Sequential(nn.utils.weight_norm(nn.Linear(self.input_dim, self.inner_dim)), nn.ReLU())
+        new_layer.float().to(device)
+
+        self.net.append(new_layer)
+        self.num_layers += 1
 
     def forward(self, x):
         """
@@ -63,8 +71,9 @@ class SDFModel(torch.nn.Module):
                 x = self.net[i](x)
             x = self.skip_layer(x)
             x = torch.hstack((x, input_data))
-            for i in range(self.num_layers - 5):
+            for i in range(self.num_layers - 5 - 1):  # last layer is residual
                 x = self.net[3 + i](x)
+            x = (1 - self.alpha) * x + self.alpha * self.net[-1](x)
             sdf = self.final_layer(x)
         else:
             if self.skip_connections:
